@@ -27,6 +27,21 @@ export function joinPath(dir: string, name: string): string {
   return base + "/" + name;
 }
 
+/**
+ * Resolve whatever the user typed into the address bar.
+ *
+ * Absolute input wins; anything else is relative to `dir` (`..`, `.` and empty
+ * segments are handled by `normalizeDir`). An empty input keeps `dir`, so the
+ * caller can treat it as a plain refresh.
+ */
+export function resolvePath(dir: string, input: string): string {
+  const raw = (input ?? "").trim();
+  const base = normalizeDir(dir);
+  if (!raw) return base;
+  if (raw.startsWith("/")) return normalizeDir(raw);
+  return normalizeDir(`${base}/${raw}`);
+}
+
 export function dirname(path: string): string {
   const normalized = normalizeDir(path);
   const index = normalized.lastIndexOf("/");

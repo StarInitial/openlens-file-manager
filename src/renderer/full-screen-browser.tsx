@@ -53,6 +53,7 @@ export const FullScreenBrowser = observer(function FullScreenBrowser(): JSX.Elem
 
   useEffect(() => {
     if (!target) return undefined;
+    // Esc always closes the viewer — one meaning everywhere, no per-field escape.
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") viewer.close();
     };

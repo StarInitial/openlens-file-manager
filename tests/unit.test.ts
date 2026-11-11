@@ -11,8 +11,10 @@ import {
   dirname,
   joinPath,
   normalizeDir,
+  resolvePath,
   validateEntryName,
 } from "../src/common/remote-path";
+import { filterEntries, highlightSegments, matchesQuery } from "../src/common/search";
 import { createTarStream, readFirstFileEntry } from "../src/main/tar";
 import { PodFsService } from "../src/main/pod-fs";
 import { ExecRunner } from "../src/main/exec";
@@ -40,12 +42,57 @@ test("breadcrumbs 从根到当前目录", () => {
   assert.deepEqual(breadcrumbs("/").map((item) => item.path), ["/"]);
 });
 
+test("resolvePath 支持绝对路径、相对路径与空输入", () => {
+  assert.equal(resolvePath("/etc", "/var/log"), "/var/log");
+  assert.equal(resolvePath("/etc", "nginx"), "/etc/nginx");
+  assert.equal(resolvePath("/etc", "../var"), "/var");
+  assert.equal(resolvePath("/", "./aaa/"), "/aaa");
+  assert.equal(resolvePath("/", "//a//b"), "/a/b");
+  assert.equal(resolvePath("/etc", ""), "/etc", "空输入留在原目录");
+  assert.equal(resolvePath("/etc", "   "), "/etc");
+});
+
 test("validateEntryName 拦截非法名称", () => {
   assert.equal(validateEntryName("ok.txt"), undefined);
   assert.ok(validateEntryName(""));
   assert.ok(validateEntryName(".."));
   assert.ok(validateEntryName("a/b"));
   assert.ok(validateEntryName("x".repeat(300)));
+});
+
+// ------------------------------------------------------------------ name search
+
+test("文件名搜索：大小写不敏感，空查询返回全部", () => {
+  assert.equal(matchesQuery("readme.txt", "RE"), true, "大写查询也应命中");
+  assert.equal(matchesQuery("readme.txt", " txt"), true, "查询两端空白被忽略");
+  assert.equal(matchesQuery("readme.txt", ""), true);
+  assert.equal(matchesQuery("readme.txt", "zzz"), false);
+
+  const entries = [{ name: "aaa" }, { name: "readme.txt" }, { name: "agent-2026-11.log" }];
+  assert.deepEqual(filterEntries(entries, ""), entries, "空查询原样返回");
+  assert.deepEqual(filterEntries(entries, "AA").map((entry) => entry.name), ["aaa"]);
+  assert.deepEqual(filterEntries(entries, "2026").map((entry) => entry.name), ["agent-2026-11.log"]);
+  assert.deepEqual(filterEntries(entries, "nope"), []);
+});
+
+test("高亮片段：覆盖每次命中且拼回原文不变", () => {
+  assert.deepEqual(highlightSegments("readme.txt", "RE"), [
+    { text: "re", match: true },
+    { text: "adme.txt", match: false },
+  ]);
+  assert.deepEqual(highlightSegments("a-a-a", "a"), [
+    { text: "a", match: true },
+    { text: "-", match: false },
+    { text: "a", match: true },
+    { text: "-", match: false },
+    { text: "a", match: true },
+  ]);
+  assert.deepEqual(highlightSegments("abc", ""), [{ text: "abc", match: false }]);
+  assert.deepEqual(highlightSegments("abc", "zz"), [{ text: "abc", match: false }]);
+
+  const name = "agent_runtime-lga-agent-runtime-54ccf4d68c-h7rjz-2026-11-06.log";
+  const rebuilt = highlightSegments(name, "2026-11").map((segment) => segment.text).join("");
+  assert.equal(rebuilt, name);
 });
 
 // ------------------------------------------------------------------ tar writer

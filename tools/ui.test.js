@@ -55,7 +55,8 @@ const FIXTURES = {
   "/": [entry("dir", "/aaa"), entry("dir", "/bbb"), entry("dir", "/etc"), entry("file", "/readme.txt", 12)],
   "/aaa": [entry("file", "/aaa/aaa-only.txt", 3)],
   "/bbb": [entry("file", "/bbb/bbb-only.txt", 3)],
-  "/etc": [entry("file", "/etc/passwd", 30)],
+  "/etc": [entry("dir", "/etc/nginx"), entry("file", "/etc/passwd", 30)],
+  "/etc/nginx": [entry("file", "/etc/nginx/nginx.conf", 7)],
 };
 
 const listCalls = [];
@@ -172,6 +173,23 @@ async function click(node) {
   });
 }
 
+/** Type into a controlled React input: native value setter + `input` event. */
+async function typeInto(input, value) {
+  assert.ok(input, "要输入的元素不存在");
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+  await act(async () => {
+    setter.call(input, value);
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+  });
+}
+
+async function pressKey(node, key) {
+  assert.ok(node, "要按键的元素不存在");
+  await act(async () => {
+    node.dispatchEvent(new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  });
+}
+
 /** Real double clicks fire click before dblclick — emulate that (the drawer's
  *  outside-click rule listens for `click`). */
 async function doubleClick(row) {
@@ -212,8 +230,11 @@ async function main() {
 
   // Mount ONLY the details header slot. The overlay must be rendered by the
   // toolbar item itself — relying on a status bar host made clicking a no-op.
-  // Emulate OpenLens' details drawer: a `.Drawer` element whose global click
-  // handler closes it whenever the click target is not inside some `.Drawer`.
+  // Emulate OpenLens' details drawer (window click listener, bubble phase):
+  //   if (!open || evt.defaultPrevented || contentElem.contains(mouseDownTarget)) return;
+  //   if (!evt.target.closest(".Drawer")) close();
+  // The last check runs *after* React handled the click, so a button that
+  // unmounts its own dialog looks detached and used to close the drawer.
   const drawer = document.createElement("div");
   drawer.className = "Drawer";
   document.body.appendChild(drawer);
@@ -222,6 +243,10 @@ async function main() {
   const lensOnClickOutside = (event) => {
     if (event.defaultPrevented) return;
     const target = event.target;
+    if (target?.isConnected === false) {
+      drawerClosed += 1; // detached target: `closest` walks a node with no parents
+      return;
+    }
     if (target?.closest?.(".Drawer")) return;
     drawerClosed += 1;
   };
@@ -266,7 +291,16 @@ async function main() {
     assert.ok(toggle.textContent.includes("main"), toggle.textContent);
   });
   check("容器选择器在工具栏右对齐", () => {
-    assert.equal(containerToggle().closest("label").style.marginLeft, "auto");
+    const group = panel().querySelector('[data-testid="podfs-toolbar-right"]');
+    assert.ok(group, "缺少右对齐分组");
+    assert.equal(group.style.marginLeft, "auto");
+    assert.ok(group.contains(containerToggle()), "容器选择器不在右对齐分组里");
+  });
+  check("搜索框在容器选择器左侧", () => {
+    const search = panel().querySelector('[data-testid="podfs-search"]');
+    assert.ok(search, "缺少搜索输入框");
+    const relative = search.compareDocumentPosition(containerToggle());
+    assert.ok(relative & window.Node.DOCUMENT_POSITION_FOLLOWING, "搜索框应排在容器选择器之前");
   });
   check("自绘下拉，不用原生 select", () => {
     assert.equal(panel().querySelector("select"), null, "不应再出现原生 select");
@@ -280,6 +314,7 @@ async function main() {
   check("切换容器会带上新容器重新拉取列表", () =>
     assert.ok(listRequests.some((request) => request.container === "sidecar"), JSON.stringify(listRequests.slice(-2))),
   );
+  check("点容器选项（自身随即卸载）不会关掉抽屉", () => assert.equal(drawerClosed, 0));
   check("关闭按钮是 X 图标", () => {
     const close = panel().querySelector('[data-testid="podfs-fullscreen-back"]');
     assert.equal(close.textContent.trim(), "✕");
@@ -315,6 +350,7 @@ async function main() {
   check("点信息图标显示路径", () => assert.ok(panel().textContent.includes("/readme.txt")));
   await click(findButton("关闭"));
   await flush(10);
+  check("关闭弹窗（按钮随弹窗卸载）不会关掉抽屉", () => assert.equal(drawerClosed, 0));
 
   await click(findRow("readme.txt").querySelector('a[data-action="rename"]'));
   await flush(10);
@@ -365,7 +401,7 @@ async function main() {
 
   await doubleClick(findRow("etc"));
   await flush(30);
-  check("双击 /etc 进入并列出 passwd", () => assert.deepEqual(rowNames(), ["passwd"]));
+  check("双击 /etc 进入并列出 nginx 与 passwd", () => assert.deepEqual(rowNames(), ["nginx", "passwd"]));
 
   console.log("\n[遮罩铺满整个列表区]");
   const backRow = Array.from(panel().querySelectorAll('tr[data-dir="true"]')).find((row) => row.textContent.includes(".."));
@@ -410,7 +446,184 @@ async function main() {
   });
   delete delayFor["/"];
 
+  console.log("\n[编辑路径]");
+  const pathEditButton = () => panel().querySelector('[data-testid="podfs-path-edit"]');
+  const pathInput = () => panel().querySelector('[data-testid="podfs-path-input"]');
+  /** What the user actually reads in the crumb bar, minus the trailing ✎ button. */
+  const crumbText = () =>
+    Array.from(panel().querySelector('[data-testid="podfs-pathbar"]').childNodes)
+      .map((node) => node.textContent ?? "")
+      .join("")
+      .replace("✎", "")
+      .trim();
+  /** Standalone "/" separators (the root crumb is itself an anchor reading "/"). */
+  const separatorCount = () => panel().querySelectorAll('[data-testid="podfs-pathbar"] [data-sep="true"]').length;
+
+  check("面包屑右侧有编辑路径入口", () => assert.ok(pathEditButton(), "缺少编辑路径按钮"));
+  check("根目录只显示一个 /", () => {
+    assert.equal(crumbText(), "/");
+    assert.equal(separatorCount(), 0, "根目录不应有额外分隔符");
+  });
+  await click(pathEditButton());
+  await flush(10);
+  check("点编辑后出现输入框并预填当前路径", () => {
+    const input = pathInput();
+    assert.ok(input, "缺少路径输入框");
+    assert.equal(input.value, "/");
+    assert.equal(pathEditButton(), null, "编辑态不应再显示面包屑");
+  });
+
+  await typeInto(pathInput(), "/etc");
+  await pressKey(pathInput(), "Enter");
+  await flush(60);
+  check("输入绝对路径回车后切换目录", () => assert.deepEqual(rowNames(), ["nginx", "passwd"]));
+  check("回车后退出编辑态并恢复面包屑", () => {
+    assert.equal(pathInput(), null);
+    assert.ok(panel().querySelector('[data-testid="podfs-pathbar"]'), "缺少面包屑栏");
+  });
+  check("路径框里回车不会关掉浮层", () => assert.ok(panel()));
+
+  check("/etc 的面包屑是 /etc，不是 / /etc", () => {
+    assert.equal(crumbText(), "/etc");
+    assert.equal(separatorCount(), 0, "根与第一级之间不该再画一个斜杠");
+  });
+
+  await click(pathEditButton());
+  await flush(10);
+  await typeInto(pathInput(), "/etc/nginx");
+  await pressKey(pathInput(), "Enter");
+  await flush(60);
+  check("多级路径只在段之间显示一个斜杠", () => {
+    assert.deepEqual(rowNames(), ["nginx.conf"]);
+    assert.equal(crumbText(), "/etc/nginx");
+    assert.equal(separatorCount(), 1);
+  });
+
+  await click(pathEditButton());
+  await flush(10);
+  await typeInto(pathInput(), "/etc");
+  await pressKey(pathInput(), "Enter");
+  await flush(60);
+
+  await click(pathEditButton());
+  await flush(10);
+  check("再次编辑时预填当前目录", () => assert.equal(pathInput().value, "/etc"));
+
+  await typeInto(pathInput(), "..");
+  await pressKey(pathInput(), "Enter");
+  await flush(60);
+  check("相对路径 .. 回到上一级", () => assert.deepEqual(rowNames(), ["aaa", "bbb", "etc", "readme.txt"]));
+
+  await click(pathEditButton());
+  await flush(10);
+  await typeInto(pathInput(), "aaa");
+  await pressKey(pathInput(), "Enter");
+  await flush(200); // /aaa 的假响应故意慢了 120ms
+  check("相对路径按当前目录解析", () => assert.deepEqual(rowNames(), ["aaa-only.txt"]));
+
+  await click(pathEditButton());
+  await flush(10);
+  await act(async () => {
+    pathInput().blur();
+  });
+  await flush(10);
+  check("输入框失焦即取消编辑且目录不变", () => {
+    assert.equal(pathInput(), null);
+    assert.deepEqual(rowNames(), ["aaa-only.txt"]);
+  });
+
+  await click(pathEditButton());
+  await flush(10);
+  await typeInto(pathInput(), "/");
+  await pressKey(pathInput(), "Enter");
+  await flush(60);
+  check("可以跳回根目录", () => assert.deepEqual(rowNames(), ["aaa", "bbb", "etc", "readme.txt"]));
+
+  await doubleClick(panel().querySelector('[data-testid="podfs-pathbar"]'));
+  await flush(10);
+  check("双击路径区也能进入编辑", () => assert.ok(pathInput()));
+  check("编辑态没有多余文案提示", () => assert.equal(panel().querySelector(".podfs-pathhint"), null));
+  await act(async () => {
+    pathInput().blur();
+  });
+  await flush(10);
+  check("失焦后回到面包屑", () => assert.ok(panel().querySelector('[data-testid="podfs-pathbar"]')));
+
+  console.log("\n[文件名搜索]");
+  const searchInput = () => panel().querySelector('[data-testid="podfs-search"]');
+  const searchClear = () => panel().querySelector('[data-testid="podfs-search-clear"]');
+
+  check("搜索框默认为空且清除按钮不可见", () => {
+    assert.equal(searchInput().value, "");
+    assert.equal(searchClear().style.visibility, "hidden");
+  });
+
+  await typeInto(searchInput(), "RE");
+  check("只输入不回车时列表不变", () => assert.deepEqual(rowNames(), ["aaa", "bbb", "etc", "readme.txt"]));
+
+  await pressKey(searchInput(), "Enter");
+  await flush(20);
+  check("回车后只留下匹配的行（大小写不敏感）", () => assert.deepEqual(rowNames(), ["readme.txt"]));
+  check("文件名里的命中字符被高亮", () => {
+    const mark = findRow("readme.txt").querySelector("mark.podfs-hl");
+    assert.ok(mark, "缺少高亮标记");
+    assert.equal(mark.textContent, "re");
+  });
+  check("显示匹配计数", () => {
+    const status = panel().querySelector('[data-testid="podfs-search-status"]');
+    assert.ok(status, "缺少匹配计数");
+    assert.ok(status.textContent.includes("匹配 1 / 共 4 项"), status.textContent);
+  });
+
+  await typeInto(searchInput(), "zzz");
+  await pressKey(searchInput(), "Enter");
+  await flush(20);
+  check("无匹配时给出空结果提示", () => {
+    assert.equal(rows().length, 0);
+    const empty = panel().querySelector('[data-testid="podfs-empty"]');
+    assert.ok(empty && empty.textContent.includes("没有匹配"), "缺少空结果提示");
+  });
+
+  await click(searchClear());
+  await flush(20);
+  check("点 X 还原为全列表", () => assert.deepEqual(rowNames(), ["aaa", "bbb", "etc", "readme.txt"]));
+  check("点 X 后输入框清空、清除按钮隐藏但仍在 DOM 里", () => {
+    assert.equal(searchInput().value, "");
+    assert.equal(searchClear().style.visibility, "hidden");
+    assert.equal(searchClear().isConnected, true, "清除按钮不应在点击后把自己卸载");
+  });
+  check("点 X 不会连带关掉整个抽屉", () => assert.equal(drawerClosed, 0, "抽屉被 X 的点击关掉了"));
+
+  await typeInto(searchInput(), "aaa");
+  await pressKey(searchInput(), "Enter");
+  await flush(20);
+  check("搜索只保留当前目录的匹配项", () => assert.deepEqual(rowNames(), ["aaa"]));
+
+  await doubleClick(findRow("aaa"));
+  await flush(200);
+  check("进入新目录后自动清空搜索", () => {
+    assert.equal(searchInput().value, "");
+    assert.equal(panel().querySelector('[data-testid="podfs-search-status"]'), null, "搜索状态应被清掉");
+    assert.deepEqual(rowNames(), ["aaa-only.txt"]);
+  });
+
+  await click(pathEditButton());
+  await flush(10);
+  await typeInto(pathInput(), "/");
+  await pressKey(pathInput(), "Enter");
+  await flush(60);
+  check("回到根目录，后续用例继续从这里开始", () =>
+    assert.deepEqual(rowNames(), ["aaa", "bbb", "etc", "readme.txt"]),
+  );
+
   console.log("\n[关闭浮层]");
+  await pressKey(document.body, "Escape");
+  await flush(20);
+  check("Esc 直接关闭浮层", () => assert.equal(panel(), null));
+
+  await click(toolbarHost.querySelector('[data-testid="podfs-toolbar-item"]'));
+  await flush(60);
+  check("可以再次打开浮层", () => assert.ok(panel(), "浮层未重新出现"));
   await click(document.querySelector('[data-testid="podfs-fullscreen-back"]'));
   await flush(20);
   check("点返回后浮层消失", () => assert.equal(panel(), null));

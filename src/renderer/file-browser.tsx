@@ -2,10 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Renderer } from "@k8slens/extensions";
 
 import type { ClusterHint, FileEntry, ListResult, OpResult, ProbeResult } from "../common/types";
-import { breadcrumbs, normalizeDir } from "../common/remote-path";
+import { breadcrumbs, normalizeDir, resolvePath } from "../common/remote-path";
+import { filterEntries, highlightSegments } from "../common/search";
 import { invoke, onProgress } from "./ipc";
 import { formatTime, humanSize, kindIcon, kindLabel } from "./format";
-import { ActionButton, ErrorBox, Icon, Modal, SimpleSelect, TextInput } from "./ui";
+import { ActionButton, ErrorBox, Icon, Modal, SearchBox, SimpleSelect, TextInput } from "./ui";
 
 const K8sApi = ((Renderer as unknown as { K8sApi?: Record<string, any> }).K8sApi) ?? {};
 
@@ -58,6 +59,20 @@ const CSS = `
   0% { margin-left: -40%; }
   100% { margin-left: 100%; }
 }
+.podfs-pathbar { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; width: 100%; opacity: .9; }
+.podfs-pathbar[data-editing="true"] { flex-wrap: nowrap; opacity: 1; }
+.podfs-pathinput {
+  flex: 1 1 auto; width: 100%; min-width: 0; font: inherit; padding: 3px 8px; border-radius: 3px;
+  border: 1px solid #3d7eff; background: transparent; color: inherit; outline: none;
+  box-shadow: 0 0 0 2px rgba(61, 126, 255, .2);
+}
+.podfs-pathedit {
+  margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 20px; border-radius: 3px; color: inherit; text-decoration: none;
+  opacity: .55; font-size: 12px; line-height: 1;
+}
+.podfs-pathedit:hover { opacity: 1; background: rgba(128, 128, 128, .18); }
+.podfs-hl { background: rgba(255, 206, 0, .35); color: inherit; border-radius: 2px; padding: 0 1px; }
 `;
 
 interface TransferState {
@@ -135,8 +150,25 @@ function RowAction(props: {
   );
 }
 
-export function FileBrowser({
-  namespace,
+/** File name with every occurrence of the committed search term wrapped in `<mark>`. */
+function HighlightedName({ name, query }: { name: string; query: string }): JSX.Element {
+  const segments = highlightSegments(name, query);
+  return (
+    <>
+      {segments.map((segment, index) =>
+        segment.match ? (
+          <mark key={index} className="podfs-hl">
+            {segment.text}
+          </mark>
+        ) : (
+          <span key={index}>{segment.text}</span>
+        ),
+      )}
+    </>
+  );
+}
+
+export function FileBrowser({  namespace,
   podName,
   containers: containerNames,
   initialContainer,
@@ -158,6 +190,13 @@ export function FileBrowser({
   const [notice, setNotice] = useState<string>();
   const [selectedPath, setSelectedPath] = useState<string>();
   const [transfer, setTransfer] = useState<TransferState>();
+
+  /** Address bar: `pathDraft` is only used while editing, `dir` stays the truth. */
+  const [pathEditing, setPathEditing] = useState(false);
+  const [pathDraft, setPathDraft] = useState("");
+  /** Search: typed text vs. the committed query the list is filtered by. */
+  const [searchDraft, setSearchDraft] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [infoEntry, setInfoEntry] = useState<FileEntry>();
   const [renameEntry, setRenameEntry] = useState<FileEntry>();
@@ -249,6 +288,38 @@ export function FileBrowser({
 
   const navigate = useCallback((next: string) => {
     setDir(normalizeDir(next));
+  }, []);
+
+  /** Another directory means another listing: the old filter no longer applies. */
+  useEffect(() => {
+    setSearchDraft("");
+    setSearchQuery("");
+  }, [dir]);
+
+  const startPathEdit = useCallback(() => {
+    setPathDraft(dir);
+    setPathEditing(true);
+  }, [dir]);
+
+  const cancelPathEdit = useCallback(() => setPathEditing(false), []);
+
+  const commitPathEdit = useCallback(() => {
+    const next = resolvePath(dir, pathDraft);
+    setPathEditing(false);
+    if (next === dir) {
+      void load(dir); // same path: treat Enter as a refresh
+      return;
+    }
+    navigate(next);
+  }, [dir, load, navigate, pathDraft]);
+
+  const commitSearch = useCallback(() => {
+    setSearchQuery(searchDraft.trim());
+  }, [searchDraft]);
+
+  const clearSearch = useCallback(() => {
+    setSearchDraft("");
+    setSearchQuery("");
   }, []);
 
   const applyResult = useCallback(
@@ -416,6 +487,9 @@ export function FileBrowser({
 
   const canWrite = probe?.canWrite !== false;
   const containerSupported = !probe || probe.ok;
+  /** Listing is complete per directory, so the filter runs on the loaded rows. */
+  const visibleEntries = useMemo(() => filterEntries(entries, searchQuery), [entries, searchQuery]);
+  const searching = searchQuery.length > 0;
   const crumbs = breadcrumbs(dir);
   /** Root has nowhere to go back to. */
   const canGoBack = dir !== "/";
@@ -450,21 +524,33 @@ export function FileBrowser({
           隐藏文件
         </label>
 
-        {containers.length > 0 ? (
-          <label style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: "auto" }}>
-            <span style={{ opacity: 0.7 }}>容器</span>
-            <SimpleSelect
-              testId="podfs-container-select"
-              title="选择容器"
-              value={container}
-              options={containers.map((item) => ({ value: item.name, label: item.name }))}
-              onChange={(next) => {
-                setContainer(next);
-                setDir("/"); // another container may not have the current path
-              }}
-            />
-          </label>
-        ) : null}
+        {/* Search sits directly left of the container picker, both right-aligned. */}
+        <div data-testid="podfs-toolbar-right" style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+          <SearchBox
+            testId="podfs-search"
+            value={searchDraft}
+            active={searching}
+            onChange={setSearchDraft}
+            onCommit={commitSearch}
+            onClear={clearSearch}
+            title="按文件名搜索当前目录（回车搜索，✕ 还原全列表）"
+          />
+          {containers.length > 0 ? (
+            <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ opacity: 0.7 }}>容器</span>
+              <SimpleSelect
+                testId="podfs-container-select"
+                title="选择容器"
+                value={container}
+                options={containers.map((item) => ({ value: item.name, label: item.name }))}
+                onChange={(next) => {
+                  setContainer(next);
+                  setDir("/"); // another container may not have the current path
+                }}
+              />
+            </label>
+          ) : null}
+        </div>
         <input
           ref={uploadInput}
           type="file"
@@ -477,29 +563,81 @@ export function FileBrowser({
         />
       </div>
 
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 2, opacity: 0.9 }}>
-        {crumbs.map((crumb, index) => (
-          <span key={crumb.path} style={{ display: "flex", alignItems: "center", gap: 2 }}>
-            {index > 0 ? <span style={{ opacity: 0.5 }}>/</span> : null}
-            <a
-              href="#"
-              onClick={(event) => {
+      {pathEditing ? (
+        <div className="podfs-pathbar" data-editing="true">
+          <input
+            className="podfs-pathinput"
+            data-testid="podfs-path-input"
+            value={pathDraft}
+            spellCheck={false}
+            autoFocus
+            placeholder="/ 绝对路径，或相对当前目录的路径"
+            // Whole path pre-selected so typing replaces it, like an address bar.
+            onFocus={(event) => event.currentTarget.select()}
+            onChange={(event) => setPathDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
                 event.preventDefault();
-                navigate(crumb.path);
-              }}
-              style={{
-                color: "inherit",
-                textDecoration: "none",
-                padding: "1px 3px",
-                borderRadius: 3,
-                background: crumb.path === dir ? "rgba(128,128,128,.25)" : "transparent",
-              }}
-            >
-              {crumb.name}
-            </a>
-          </span>
-        ))}
-      </div>
+                commitPathEdit();
+              }
+            }}
+            onBlur={cancelPathEdit}
+          />
+        </div>
+      ) : (
+        <div
+          className="podfs-pathbar"
+          data-testid="podfs-pathbar"
+          title="双击路径可编辑，回车跳转到该路径"
+          onDoubleClick={(event) => {
+            // Crumb links keep their own behaviour; elsewhere a double click
+            // turns the bar into an editable path field.
+            if ((event.target as HTMLElement).closest("a")) return;
+            startPathEdit();
+          }}
+        >
+          {crumbs.map((crumb, index) => (
+            <span key={crumb.path} style={{ display: "flex", alignItems: "center", gap: 2 }}>
+              {/* The root crumb *is* "/", so the first child must not be prefixed
+                  with a second slash — only deeper levels need a separator. */}
+              {index > 1 ? (
+                <span data-sep="true" style={{ opacity: 0.5 }}>
+                  /
+                </span>
+              ) : null}
+              <a
+                href="#"
+                onClick={(event) => {
+                  event.preventDefault();
+                  navigate(crumb.path);
+                }}
+                style={{
+                  color: "inherit",
+                  textDecoration: "none",
+                  padding: "1px 3px",
+                  borderRadius: 3,
+                  background: crumb.path === dir ? "rgba(128,128,128,.25)" : "transparent",
+                }}
+              >
+                {crumb.name}
+              </a>
+            </span>
+          ))}
+          <a
+            className="podfs-pathedit"
+            data-testid="podfs-path-edit"
+            href="#"
+            title="编辑路径（回车跳转）"
+            aria-label="编辑路径"
+            onClick={(event) => {
+              event.preventDefault();
+              startPathEdit();
+            }}
+          >
+            ✎
+          </a>
+        </div>
+      )}
 
       {probe && !containerSupported ? (
         <ErrorBox message={probe.message ?? "当前容器不支持文件操作"} onRetry={() => void runProbe()} />
@@ -507,6 +645,12 @@ export function FileBrowser({
       {probe?.ok && probe.tools.tar === false ? <ErrorBox message="容器内缺少 tar，上传/下载不可用。" /> : null}
       {error ? <ErrorBox message={error} onRetry={() => void refresh()} /> : null}
       {notice ? <div style={{ color: "#7cd992" }}>{notice}</div> : null}
+      {searching ? (
+        <div data-testid="podfs-search-status" style={{ fontSize: 11, opacity: 0.7 }}>
+          搜索「{searchQuery}」：匹配 {visibleEntries.length} / 共 {entries.length} 项
+          {visibleEntries.length === 0 ? " · 点输入框右侧 ✕ 还原全列表" : ""}
+        </div>
+      ) : null}
 
       <div className="podfs-body">
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -533,7 +677,7 @@ export function FileBrowser({
               </tr>
             ) : null}
 
-            {entries.map((entry) => (
+            {visibleEntries.map((entry) => (
               <tr
                 key={entry.path}
                 className="podfs-row"
@@ -551,7 +695,9 @@ export function FileBrowser({
                 <td style={{ padding: "4px 6px", wordBreak: "break-all" }}>
                   <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <Icon material={kindIcon(entry.kind)} tooltip={kindLabel(entry.kind)} />
-                    <span>{entry.name}</span>
+                    <span data-name={entry.name}>
+                      <HighlightedName name={entry.name} query={searchQuery} />
+                    </span>
                   </span>
                 </td>
                 <td style={{ padding: "4px 6px", opacity: 0.85 }}>{entry.kind === "dir" ? "-" : humanSize(entry.size)}</td>
@@ -581,10 +727,14 @@ export function FileBrowser({
               </tr>
             ))}
 
-            {!loading && entries.length === 0 ? (
+            {!loading && visibleEntries.length === 0 ? (
               <tr>
-                <td colSpan={4} style={{ padding: 10, opacity: 0.6 }}>
-                  {error ? "加载失败" : "空目录"}
+                <td colSpan={4} style={{ padding: 10, opacity: 0.6 }} data-testid="podfs-empty">
+                  {error
+                    ? "加载失败"
+                    : searching && entries.length > 0
+                      ? `没有匹配「${searchQuery}」的文件`
+                      : "空目录"}
                 </td>
               </tr>
             ) : null}

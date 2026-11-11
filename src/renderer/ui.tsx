@@ -29,6 +29,21 @@ export function Icon({ material, tooltip, interactive }: { material: string; too
   return withTitle(content, tooltip);
 }
 
+/**
+ * OpenLens' Drawer closes itself on any click whose `event.target` is not inside
+ * a `.Drawer` — a *detached* target (a button that unmounts its own dialog on
+ * click) fails that test, so the whole sidebar vanished. The Drawer skips its
+ * check when the click is `defaultPrevented`, so every button of ours marks its
+ * click handled. See `viewer-state.ts` for the same host behaviour.
+ */
+function handledClick(onClick?: () => void) {
+  if (!onClick) return undefined;
+  return (event?: { preventDefault?: () => void }) => {
+    event?.preventDefault?.();
+    onClick();
+  };
+}
+
 export function ActionButton(props: {
   label: string;
   onClick?: () => void;
@@ -37,14 +52,15 @@ export function ActionButton(props: {
   title?: string;
 }): JSX.Element {
   const { label, onClick, primary, disabled, title } = props;
+  const handleClick = handledClick(onClick);
 
   const content = Component.Button ? (
-    <Component.Button label={label} primary={primary} disabled={disabled} onClick={onClick} small />
+    <Component.Button label={label} primary={primary} disabled={disabled} onClick={handleClick} small />
   ) : (
     <button
       type="button"
       disabled={disabled}
-      onClick={onClick}
+      onClick={handleClick}
       style={{
         padding: "4px 10px",
         borderRadius: 4,
@@ -146,7 +162,8 @@ export function SimpleSelect(props: {
             <div
               key={option.value}
               data-option={option.value}
-              onClick={() => {
+              onClick={(event) => {
+                event.preventDefault(); // the popup (and this row) unmounts right away
                 setOpen(false);
                 if (option.value !== value) onChange(option.value);
               }}
@@ -189,11 +206,108 @@ export function TextInput(props: { value: string; onChange: (value: string) => v
   );
 }
 
+/**
+ * Search field with an inline "clear" button.
+ *
+ * Committing is explicit (Enter) rather than per keystroke, so the list does not
+ * flicker while a name is being typed; the ✕ button drops the filter entirely.
+ * No keyboard shortcut beyond Enter: Esc belongs to the surrounding overlay.
+ */
+export function SearchBox(props: {
+  value: string;
+  onChange: (value: string) => void;
+  /** Enter — apply the typed query. */
+  onCommit: () => void;
+  /** ✕ — drop the query and show everything again. */
+  onClear: () => void;
+  /** A committed query is in effect (keeps the ✕ visible once the input is empty). */
+  active?: boolean;
+  placeholder?: string;
+  title?: string;
+  testId?: string;
+}): JSX.Element {
+  const { value, onChange, onCommit, onClear, active, placeholder, title, testId } = props;
+  const inputRef = useRef<HTMLInputElement>(null);
+  const showClear = Boolean(value) || Boolean(active);
+
+  return (
+    <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+      <input
+        ref={inputRef}
+        type="text"
+        data-testid={testId}
+        title={title}
+        value={value}
+        spellCheck={false}
+        placeholder={placeholder ?? "搜索文件名"}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            onCommit();
+          }
+        }}
+        style={{
+          width: 150,
+          padding: "3px 20px 3px 8px",
+          borderRadius: 3,
+          border: `1px solid ${active ? "rgba(61,126,255,.75)" : "rgba(128,128,128,.5)"}`,
+          background: "transparent",
+          color: "inherit",
+          font: "inherit",
+        }}
+      />
+      {/* Kept mounted (hidden, not removed) on purpose: clearing empties the box,
+          which would otherwise unmount the very node that was just clicked — and
+          a detached click target reads as "outside the drawer" to OpenLens. */}
+      <button
+        type="button"
+        data-testid={testId ? `${testId}-clear` : undefined}
+        title="清除搜索，显示全部"
+        aria-label="清除搜索"
+        aria-hidden={showClear ? undefined : "true"}
+        tabIndex={showClear ? 0 : -1}
+        onClick={(event) => {
+          event.preventDefault();
+          if (!showClear) return;
+          onClear();
+          inputRef.current?.focus();
+        }}
+        style={{
+          position: "absolute",
+          right: 2,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 16,
+          height: 16,
+          padding: 0,
+          borderRadius: 8,
+          border: "none",
+          background: "transparent",
+          color: "inherit",
+          cursor: showClear ? "pointer" : "default",
+          fontSize: 10,
+          lineHeight: 1,
+          opacity: showClear ? 0.6 : 0,
+          visibility: showClear ? "visible" : "hidden",
+          pointerEvents: showClear ? "auto" : "none",
+        }}
+      >
+        ✕
+      </button>
+    </span>
+  );
+}
+
 export function Modal(props: { title: string; children: React.ReactNode; onClose: () => void }): JSX.Element {
   return (
     <div
       role="presentation"
-      onClick={props.onClose}
+      onClick={(event) => {
+        event.preventDefault(); // closing unmounts the clicked node — see handledClick
+        props.onClose();
+      }}
       style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000 }}
     >
       <div
