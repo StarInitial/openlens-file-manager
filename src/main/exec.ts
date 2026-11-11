@@ -55,14 +55,16 @@ export class ExecRunner {
     return this.opts.contextName;
   }
 
-  private spawnFor(target: PodTarget, argv: string[], shellStdio: boolean): ChildProcess {
+  private spawnFor(target: PodTarget, argv: string[], shellStdio: boolean, withStdin = false): ChildProcess {
     const [command, ...prefix] = this.opts.kubectlCommand;
     if (!command) throw new Error("kubectl 命令为空");
 
     const args: string[] = [...prefix];
     if (this.opts.kubeconfigPath) args.push("--kubeconfig", this.opts.kubeconfigPath);
     if (this.opts.contextName) args.push("--context", this.opts.contextName);
-    args.push("exec", "-n", target.namespace, target.pod);
+    // `-i` is required for kubectl to forward stdin; without it the remote command
+    // never reads our pipe and kubectl exits → EPIPE on the first write.
+    args.push("exec", ...(withStdin ? ["-i"] : []), "-n", target.namespace, target.pod);
     if (target.container) args.push("-c", target.container);
     args.push("--", ...argv);
 
@@ -103,9 +105,22 @@ export class ExecRunner {
 
   /** Stream bytes into the command (upload) and/or out of it (download). */
   async pipe(target: PodTarget, argv: string[], options: PipeOptions = {}): Promise<PipeResult> {
-    const child = this.spawnFor(target, argv, true);
+    const child = this.spawnFor(target, argv, true, true);
     const stderrChunks: Buffer[] = [];
     child.stderr?.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+
+    /**
+     * The remote side can close the pipe early (missing tar, read-only fs, OOM …).
+     * Node then raises EPIPE on the next write — it must never escape as an
+     * uncaught exception, or it takes the whole main process down with a
+     * "A JavaScript error occurred in the main process" dialog.
+     */
+    let pipeBroken: Error | undefined;
+    child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
+      pipeBroken = error;
+      options.input?.destroy();
+    });
+    child.stdout?.on("error", () => undefined);
 
     const abort = () => {
       child.kill("SIGKILL");
@@ -129,6 +144,8 @@ export class ExecRunner {
 
     if (options.input) {
       options.input.on("error", () => child.stdin?.destroy());
+      // Stop reading the local source if the remote end hung up.
+      child.stdin?.on("close", () => options.input?.destroy());
       options.input.pipe(child.stdin!);
     } else {
       child.stdin?.end();
@@ -136,10 +153,16 @@ export class ExecRunner {
 
     try {
       const [code] = (await once(child, "close")) as [number | null];
+      const stderr = Buffer.concat(stderrChunks).toString("utf8");
       return {
         code,
         bytes,
-        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        stderr:
+          stderr.trim().length > 0
+            ? stderr
+            : pipeBroken
+              ? `管道提前关闭（${(pipeBroken as NodeJS.ErrnoException).code ?? "EPIPE"}）：容器端命令已退出，通常是容器内缺少 tar 或磁盘不可写。`
+              : stderr,
         aborted: options.signal?.aborted ?? false,
       };
     } finally {
