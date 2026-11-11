@@ -23,7 +23,11 @@ function notifyError(message: string): void {
 
 function PodFilesToolbarItemBase(props: { object?: any; toolbar?: boolean }): JSX.Element | null {
   const pod = props.object;
-  if (!pod) return null;
+  // Lens renders the same registered item in two places: the Pods list row kebab
+  // menu (`<KubeObjectMenu object={pod} />`) and the Pod details header
+  // (`<KubeObjectMenu object={pod} toolbar />`). Only the header should offer the
+  // file manager, so anything without `toolbar` stays invisible.
+  if (!pod || props.toolbar !== true) return null;
 
   const open = () => {
     const target = targetFromPod(pod);

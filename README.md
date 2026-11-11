@@ -2,7 +2,7 @@
 
 在 OpenLens 里浏览容器内文件：查看文件信息、重命名、上传、下载、新建目录、删除。
 
-**唯一入口**：Pod 详情页右上角工具栏的文件夹图标 → 打开**全屏浮层**。列表滚动位置、Pod 侧栏与抽屉状态全程保留，点「返回」/`Esc`/点遮罩即回到原处。
+**唯一入口**：Pod 详情页右上角工具栏的文件夹图标 → 打开**全屏浮层**（Pods 列表行的 `⋮` 菜单里**不出现**「文件管理」，只有抽屉头部有）。列表滚动位置、Pod 侧栏与抽屉状态全程保留，点「返回」/`Esc`/点遮罩即回到原处。
 
 - 宿主：OpenLens 6.5.x（`engines.lens: ^6.5.0`）
 - 传输方式：`kubectl exec` + tar 流，**文件字节不经过渲染进程 IPC**
@@ -12,7 +12,7 @@
 
 | 能力 | 说明 |
 |---|---|
-| 入口 | Pod 详情右上角工具栏图标（与 shell / logs 图标同一排） |
+| 入口 | Pod 详情右上角工具栏图标（与 shell / logs 图标同一排）。注册项只有详情抽屉会传 `toolbar`，`PodFilesToolbarItem` 对没有 `toolbar` 的实例直接返回 `null`，所以 Pods 列表行的 `⋮` 菜单（Attach Pod / Shell / Logs / Edit / Delete）里不会多出一项 |
 | 呈现 | 全屏浮层：`position: fixed` + `createPortal` 进当前 `.Drawer` 内部，**不换路由**，所以底层列表与抽屉不被卸载。挂进 `.Drawer` 是必需的——OpenLens 的抽屉把「点击目标 `closest(".Drawer")` 为空」判定为外部点击并关闭自己，挂在 `body` 上会导致点一下就全关。同一判定还有第二个坑：抽屉的监听器在 window 冒泡阶段才跑，此时 React 已经把「点了就自己卸载」的节点（搜索框 ✕、弹窗按钮、下拉选项）从 DOM 里摘掉，`closest` 返回 null → 整个侧边栏被关。因此插件内所有按钮都 `preventDefault()`（抽屉自己会跳过 `defaultPrevented` 的点击），清除按钮还改成常驻 DOM、只用 `visibility` 隐藏 |
 | 容器选择 | 顶部常显「容器」下拉（**自绘**，非原生 `<select>`——原生圆角与蓝色胶囊高亮无法定制），默认取 `kubectl.kubernetes.io/default-container` 注解，没有则取第一个容器；切换后自动回到 `/` 并重新探测 |
 | 浏览目录 | **双击目录进入**；面包屑导航（根就是那个 `/`，第一级不再重复画一个斜杠，多级路径渲染成 `/etc/nginx` 而不是 `/ / etc / nginx`，每段都可点）；隐藏文件开关；目录优先排序 |
@@ -90,7 +90,7 @@ rules:
 
 - 容器内需要 `tar`（列目录还需要 `find` 或 `ls`、`stat`）。**distroless / scratch / Windows 容器不支持**——扩展会先探测并明确提示。
 - 上传依赖 Electron 的 `File.path`（OpenLens 6.5 所在 Electron 版本仍提供）；拿不到路径会明确报错，不会假装成功。
-- 浮层挂在状态栏的常驻组件上，所以要**先打开一次 Pod 详情抽屉**（工具栏图标在那里）才能进入。
+- 浮层由抽屉头部的那个按钮自己挂载，所以要**先打开 Pod 详情抽屉**（文件夹图标在那里）才能进入；Pods 列表的 `⋮` 菜单里没有入口。
 - 大目录不分页，一次列出全部条目（`stat` 每批 300 条，自动分批）。文件名搜索是在这份已加载的列表上做的本地子串过滤（不区分大小写，不做 glob/正则）。
 
 ## 开发与测试
@@ -100,7 +100,7 @@ npm run typecheck   # 对 Lens 类型面做完整类型检查
 npm run test:unit   # 16 项：路径/相对路径解析、文件名搜索与高亮、tar 打包/解析、busybox stat 解析、错误映射
 npm run test:e2e    # 25 项：WSL 里跑真实 Linux 命令模拟容器（零集群接触）
 npm run test:smoke  # 9 项：按宿主方式 require 两个 bundle，校验注册与降级
-npm run test:ui     # 75 项：jsdom 真实交互（从工具栏图标一路点到关闭浮层，含路径编辑、面包屑斜杠、文件名搜索与「点击不误关抽屉」回归）
+npm run test:ui     # 76 项：jsdom 真实交互（从工具栏图标一路点到关闭浮层，含路径编辑、面包屑斜杠、文件名搜索与「点击不误关抽屉」回归）
 npm test            # 全部串起来跑
 ```
 

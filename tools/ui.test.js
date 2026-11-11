@@ -269,6 +269,26 @@ async function main() {
   check("抽屉里不再有内联的文件管理区块", () => assert.ok(!renderer.kubeObjectDetailItems || renderer.kubeObjectDetailItems.length === 0));
   check("工具栏图标显示「文件管理」", () => assert.ok(toolbarHost.textContent.includes("文件管理")));
 
+  // Pods 列表行 kebab 菜单渲染的是同一个注册项，但 Lens 只在那里传 `object`
+  // （详情抽屉头部才传 `toolbar`）。列表里必须什么都不渲染。
+  const rowMenuHost = document.createElement("div");
+  drawer.appendChild(rowMenuHost);
+  await act(async () => {
+    ReactDOM.render(
+      React.createElement(renderer.kubeObjectMenuItems[0].components.MenuItem, { object: fakePod }),
+      rowMenuHost,
+    );
+  });
+  await flush(10);
+  check("Pods 列表行的 ⋮ 菜单里没有「文件管理」", () => {
+    assert.equal(rowMenuHost.textContent.trim(), "", rowMenuHost.textContent);
+    assert.equal(rowMenuHost.querySelector("a, button"), null, "不应渲染任何可点元素");
+  });
+  await act(async () => {
+    ReactDOM.unmountComponentAtNode(rowMenuHost);
+  });
+  rowMenuHost.remove();
+
   await click(toolbarHost.querySelector('[data-testid="podfs-toolbar-item"]'));
   await flush(30);
   check("点击图标打开全屏浮层", () => assert.ok(panel(), "浮层未出现"));
