@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2020", "DOM"],
+    "jsx": "react",
+    "strict": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "forceConsistentCasingInFileNames": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "include": ["main.ts", "renderer.tsx", "src/**/*.ts", "src/**/*.tsx"]
+}

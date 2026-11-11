@@ -1,0 +1,49 @@
+{
+  "name": "pod-file-manager",
+  "publisher": "openlens",
+  "version": "0.7.3",
+  "description": "Pod 文件管理器：在 Pod 详情页浏览、检查、重命名、上传、下载、删除容器内文件",
+  "license": "MIT",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "engines": {
+    "lens": "^6.5.0"
+  },
+  "files": [
+    "dist/**/*",
+    "package.json",
+    "README.md"
+  ],
+  "keywords": [
+    "lens",
+    "openlens",
+    "extension",
+    "kubernetes",
+    "pod",
+    "file-manager"
+  ],
+  "scripts": {
+    "build": "webpack --config webpack.config.js",
+    "dev": "webpack --config webpack.config.js --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:build": "tsc -p tsconfig.test.json",
+    "test:unit": "npm run test:build && node --test .test-build/tests/unit.test.js",
+    "test:e2e": "npm run test:build && node .test-build/tools/e2e.js",
+    "test:smoke": "node tools/smoke.js",
+    "test:ui": "node tools/ui.test.js",
+    "test": "npm run test:unit && npm run test:e2e && npm run build && npm run test:smoke && npm run test:ui",
+    "install:local": "npm run build && node tools/install-to-openlens.js",
+    "pack:ext": "npm run build && npm pack",
+    "pack:dist": "npm run build && node tools/pack-dist.js"
+  },
+  "devDependencies": {
+    "@k8slens/extensions": "^6.5.2",
+    "@types/node": "^20.14.10",
+    "@types/react": "^17.0.80",
+    "jsdom": "^31.0.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.6.3",
+    "webpack": "^5.95.0",
+    "webpack-cli": "^5.1.4"
+  }
+}
